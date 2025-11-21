@@ -43,7 +43,7 @@ def main() -> None:
         # Inicializa os componentes do pipeline.
         # Use 0 para webcam, ou forneça o caminho para um arquivo de vídeo.
         camera: Camera = Camera(source=0)
-        detector: Detector = Detector(model_path="yolov8n.pt")
+        detector: Detector = Detector(model_path="lpr_model.pt")
         ocr_engine: OCREngine = OCREngine()
 
     except Exception as e:
@@ -76,7 +76,34 @@ def main() -> None:
                 if plate_crop.size == 0:
                     continue
 
-                filtered_plate: np.ndarray = utils.apply_image_filters(plate_crop)
+                # Tenta corrigir a perspectiva da placa
+                corners: Optional[np.ndarray] = utils.find_plate_corners(plate_crop)
+                
+                # A imagem a ser enviada para o OCR
+                processed_plate: np.ndarray
+                
+                if corners is not None:
+                    # O crop da placa adiciona um buffer. Precisamos saber o offset.
+                    x1_buffered: int = max(0, x1 - 5)
+                    y1_buffered: int = max(0, y1 - 5)
+
+                    # Converte as coordenadas dos cantos para o frame original
+                    corners[:, 0] += x1_buffered
+                    corners[:, 1] += y1_buffered
+                    
+                    # Aplica a transformação de perspectiva na imagem original (sem filtros)
+                    # para obter a melhor qualidade.
+                    warped_plate: np.ndarray = utils.four_point_transform(frame, corners)
+                    processed_plate = warped_plate
+                    
+                    # Exibe a placa retificada para depuração
+                    if warped_plate.size > 0:
+                        cv2.imshow("Placa Retificada", warped_plate)
+                else:
+                    # Fallback: se não encontrar os cantos, usa o recorte simples
+                    processed_plate = plate_crop
+
+                filtered_plate: np.ndarray = utils.apply_image_filters(processed_plate)
 
                 # 3. Inferência de OCR
                 plate_text: Optional[str] = ocr_engine.recognize_plate(filtered_plate)

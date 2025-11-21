@@ -58,15 +58,15 @@ class Detector:
         results = self.model(frame, verbose=False)
 
         bboxes: List[np.ndarray] = []
+        conf_threshold: float = 0.5
         for result in results:
             for box in result.boxes:
-                # NOTA: Um modelo genérico como 'yolov8n.pt' não possui uma classe
-                # 'license_plate'. Este código assume que QUALQUER detecção é
-                # uma placa em potencial. Em um cenário real, é OBRIGATÓRIO
-                # filtrar pelo índice de classe correto.
-                # Exemplo: `if box.cls == 0:` onde 0 é o ID da classe da placa.
-                xyxy: np.ndarray = box.xyxy.cpu().numpy().astype(int)[0]
-                bboxes.append(xyxy)
+                # box.cls é o ID da classe. Para um modelo treinado apenas em placas,
+                # o ID da classe 'license_plate' geralmente é 0.
+                # box.conf é a confiança da detecção.
+                if box.cls == 0 and box.conf >= conf_threshold:
+                    xyxy: np.ndarray = box.xyxy.cpu().numpy().astype(int)[0]
+                    bboxes.append(xyxy)
 
         return bboxes
 

@@ -94,6 +94,59 @@ def four_point_transform(image: np.ndarray, pts: np.ndarray) -> np.ndarray:
     return warped
 
 
+def find_plate_corners(image: np.ndarray) -> Optional[np.ndarray]:
+    """
+    Encontra os 4 cantos de uma placa em uma imagem.
+
+    Esta função assume que a imagem de entrada é um recorte aproximado da placa.
+    Ela usa detecção de contornos para encontrar a forma da placa.
+
+    Args:
+        image (np.ndarray): A imagem recortada da placa (de preferência em escala de cinza).
+
+    Returns:
+        Optional[np.ndarray]: Um array com os 4 pontos (x, y) dos cantos da placa,
+                              ou None se não for possível encontrar 4 cantos.
+    """
+    # Garante que a imagem está em escala de cinza
+    if len(image.shape) == 3 and image.shape[2] == 3:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = image
+
+    # Binarização para isolar a placa
+    # O valor de threshold pode precisar de ajuste
+    _, thresh = cv2.threshold(gray, 128, 255, cv2.THRESH_BINARY_INV)
+
+    # Encontra contornos
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    if not contours:
+        return None
+
+    # Ordena os contornos pela área e pega o maior
+    contours = sorted(contours, key=cv2.contourArea, reverse=True)
+    largest_contour = contours[0]
+
+    # Aproxima o contorno para uma forma com 4 vértices
+    peri = cv2.arcLength(largest_contour, True)
+    approx = cv2.approxPolyDP(largest_contour, 0.02 * peri, True)
+
+    if len(approx) == 4:
+        # Reordena os pontos para o formato esperado por four_point_transform:
+        # topo-esquerda, topo-direita, baixo-direita, baixo-esquerda
+        rect = np.zeros((4, 2), dtype="float32")
+        s = approx.sum(axis=2)
+        rect[0] = approx[np.argmin(s)]
+        rect[2] = approx[np.argmax(s)]
+        diff = np.diff(approx, axis=2)
+        rect[1] = approx[np.argmin(diff)]
+        rect[3] = approx[np.argmax(diff)]
+        return rect.reshape(4, 2)
+    
+    return None
+
+
 def apply_image_filters(image: np.ndarray) -> np.ndarray:
     """
     Aplica uma série de filtros na imagem da placa para melhorar a precisão do OCR.
@@ -102,21 +155,23 @@ def apply_image_filters(image: np.ndarray) -> np.ndarray:
         image (np.ndarray): A imagem de entrada da placa.
 
     Returns:
-        np.ndarray: A imagem filtrada em escala de cinza.
+        np.ndarray: A imagem filtrada e binarizada.
     """
-    # Converte para escala de cinza
-    gray: np.ndarray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    # Garante que a imagem esteja em escala de cinza
+    if len(image.shape) == 3 and image.shape[2] == 3:
+        gray: np.ndarray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    else:
+        gray: np.ndarray = image
 
-    # Aplica equalização de histograma para melhorar o contraste
-    equalized: np.ndarray = cv2.equalizeHist(gray)
+    # Filtro bilateral para reduzir ruído e manter bordas nítidas
+    # Os parâmetros (d, sigmaColor, sigmaSpace) podem precisar de ajuste.
+    filtered: np.ndarray = cv2.bilateralFilter(gray, 11, 17, 17)
 
-    # Outros filtros podem ser adicionados aqui, por exemplo:
-    # - Filtro bilateral para reduzir ruído e manter bordas nítidas
-    #   filtered = cv2.bilateralFilter(equalized, 11, 17, 17)
-    # - Binarização para criar uma imagem preto e branco
-    #   _, thresh = cv2.threshold(equalized, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    # Binarização com o método de Otsu para criar uma imagem preto e branco.
+    # O método de Otsu encontra um limiar global ideal.
+    _, thresh = cv2.threshold(filtered, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
-    return equalized
+    return thresh
 
 
 if __name__ == "__main__":
