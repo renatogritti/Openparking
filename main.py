@@ -12,6 +12,7 @@ Date: 21/11/2025
 """
 
 import re
+import logging
 from typing import List, Optional
 
 import cv2
@@ -22,124 +23,107 @@ from src.database import add_detection, create_db_and_tables
 from src.detector import Detector
 from src.ocr_engine import OCREngine
 import src.utils as utils
+from config import PLATE_REGEX, CAMERA_SOURCE, MODEL_PATH
 
-# Expressão Regular (Regex) para validar placas de veículos brasileiros.
-# Formato Mercosul: LLLNLNN (ex: ABC4E67)
-# Formato Antigo: LLLNNNN (ex: ABC1234)
-PLATE_REGEX: str = r"^[A-Z]{3}[0-9][A-Z0-9][0-9]{2}$|^[A-Z]{3}[0-9]{4}$"
+# --- Configuração de Logging ---
+logging.basicConfig(level=logging.INFO)
+
+
+def process_plate(plate_text: str, frame: np.ndarray, bbox: List[int]) -> None:
+    """
+    Valida, armazena e desenha a placa no frame.
+    """
+    x1, y1, _, _ = bbox
+    if re.match(PLATE_REGEX, plate_text):
+        logging.info(f"PLACA VÁLIDA DETECTADA: {plate_text}")
+        try:
+            if add_detection(plate=plate_text):
+                logging.info(f"Placa '{plate_text}' salva no banco de dados.")
+            else:
+                logging.info(f"Placa '{plate_text}' já registrada recentemente.")
+        except Exception as e:
+            logging.warning(f"Não foi possível salvar a placa '{plate_text}': {e}")
+
+        cv2.putText(
+            frame, plate_text, (x1, y1 - 10),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.9, (36, 255, 12), 2,
+        )
+    else:
+        logging.info(f"Formato de placa inválido encontrado: {plate_text}")
+
+
+def process_frame(frame: np.ndarray, detector: Detector, ocr_engine: OCREngine) -> None:
+    """
+    Processa um único frame de vídeo para detectar e reconhecer placas.
+    """
+    plate_bboxes = detector.detect_plates(frame)
+
+    for bbox in plate_bboxes:
+        x1, y1, x2, y2 = bbox
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+
+        plate_crop = detector.crop_plate(frame, bbox)
+        if plate_crop.size == 0:
+            continue
+
+        corners = utils.find_plate_corners(plate_crop)
+        
+        if corners is not None:
+            x1_buffered = max(0, x1 - 5)
+            y1_buffered = max(0, y1 - 5)
+            corners[:, 0] += x1_buffered
+            corners[:, 1] += y1_buffered
+            processed_plate = utils.four_point_transform(frame, corners)
+            if processed_plate.size > 0:
+                cv2.imshow("Placa Retificada", processed_plate)
+        else:
+            processed_plate = plate_crop
+
+        filtered_plate = utils.apply_image_filters(processed_plate)
+        plate_text = ocr_engine.recognize_plate(filtered_plate)
+
+        if plate_text:
+            process_plate(plate_text, frame, bbox)
 
 
 def main() -> None:
     """
     Função principal que executa o pipeline de LPR.
     """
-    print("Iniciando o OpenParking LPR...")
+    logging.info("Iniciando o OpenParking LPR...")
 
-    # --- INICIALIZAÇÃO ---
     try:
-        print("Inicializando o banco de dados...")
+        logging.info("Inicializando o banco de dados...")
         create_db_and_tables()
 
-        # Inicializa os componentes do pipeline.
-        # Use 0 para webcam, ou forneça o caminho para um arquivo de vídeo.
-        camera: Camera = Camera(source=0)
-        detector: Detector = Detector(model_path="lpr_model.pt")
-        ocr_engine: OCREngine = OCREngine()
+        camera = Camera(source=CAMERA_SOURCE)
+        detector = Detector(model_path=MODEL_PATH)
+        ocr_engine = OCREngine()
 
     except Exception as e:
-        print(f"[ERRO] Falha ao inicializar o pipeline: {e}")
+        logging.error(f"Falha ao inicializar o pipeline: {e}")
         return
 
-    print("Pipeline inicializado com sucesso. Iniciando processamento do vídeo...")
+    logging.info("Pipeline inicializado. Iniciando processamento do vídeo...")
 
-    # --- LOOP PRINCIPAL DE PROCESSAMENTO ---
     try:
         while True:
-            ret: bool
-            frame: Optional[np.ndarray]
             ret, frame = camera.get_frame()
-
             if not ret or frame is None:
-                print("Fim do stream de vídeo ou erro na câmera.")
+                logging.info("Fim do stream de vídeo ou erro na câmera.")
                 break
 
-            # 1. Detecção de Placas
-            plate_bboxes: List[np.ndarray] = detector.detect_plates(frame)
-
-            # Processa cada placa detectada
-            for bbox in plate_bboxes:
-                x1, y1, x2, y2 = bbox
-                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-
-                # 2. Pré-processamento da Placa
-                plate_crop: np.ndarray = detector.crop_plate(frame, bbox)
-                if plate_crop.size == 0:
-                    continue
-
-                # Tenta corrigir a perspectiva da placa
-                corners: Optional[np.ndarray] = utils.find_plate_corners(plate_crop)
-                
-                # A imagem a ser enviada para o OCR
-                processed_plate: np.ndarray
-                
-                if corners is not None:
-                    # O crop da placa adiciona um buffer. Precisamos saber o offset.
-                    x1_buffered: int = max(0, x1 - 5)
-                    y1_buffered: int = max(0, y1 - 5)
-
-                    # Converte as coordenadas dos cantos para o frame original
-                    corners[:, 0] += x1_buffered
-                    corners[:, 1] += y1_buffered
-                    
-                    # Aplica a transformação de perspectiva na imagem original (sem filtros)
-                    # para obter a melhor qualidade.
-                    warped_plate: np.ndarray = utils.four_point_transform(frame, corners)
-                    processed_plate = warped_plate
-                    
-                    # Exibe a placa retificada para depuração
-                    if warped_plate.size > 0:
-                        cv2.imshow("Placa Retificada", warped_plate)
-                else:
-                    # Fallback: se não encontrar os cantos, usa o recorte simples
-                    processed_plate = plate_crop
-
-                filtered_plate: np.ndarray = utils.apply_image_filters(processed_plate)
-
-                # 3. Inferência de OCR
-                plate_text: Optional[str] = ocr_engine.recognize_plate(filtered_plate)
-
-                if plate_text:
-                    # 4. Validação
-                    if re.match(PLATE_REGEX, plate_text):
-                        print(f"PLACA VÁLIDA DETECTADA: {plate_text}")
-                        # 5. Armazenamento
-                        try:
-                            add_detection(plate=plate_text)
-                            print(f"Placa '{plate_text}' salva no banco de dados.")
-                        except Exception as e:
-                            print(f"[AVISO] Não foi possível salvar a placa no banco de dados: {e}")
-
-                        # Desenha o texto reconhecido no quadro
-                        cv2.putText(
-                            frame, plate_text, (x1, y1 - 10),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.9, (36, 255, 12), 2,
-                        )
-                    else:
-                        print(f"Formato de placa inválido encontrado: {plate_text}")
-
-            # Exibe o quadro resultante
+            process_frame(frame, detector, ocr_engine)
             cv2.imshow("OpenParking LPR", frame)
 
-            # Interrompe o loop se a tecla 'q' for pressionada
             if cv2.waitKey(1) & 0xFF == ord("q"):
-                print("Tecla 'q' pressionada, encerrando a aplicação.")
+                logging.info("Tecla 'q' pressionada, encerrando a aplicação.")
                 break
     finally:
-        # --- LIMPEZA DE RECURSOS ---
-        print("Liberando recursos...")
+        logging.info("Liberando recursos...")
         camera.release()
         cv2.destroyAllWindows()
-        print("Aplicação finalizada.")
+        logging.info("Aplicação finalizada.")
 
 
 if __name__ == "__main__":

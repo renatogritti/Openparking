@@ -1,103 +1,90 @@
 # -*- coding: utf-8 -*-
 """
-Dashboard Web com Streamlit para o OpenParking LPR.
+Dashboard Web com Flask para o OpenParking LPR.
 
-Este script cria uma interface web simples para visualizar os dados de
+Este script cria uma interface web para visualizar os dados de
 reconhecimento de placas que foram armazenados no banco de dados pelo
 script `main.py`.
 
 Author: Renato Gritti
-Date: 21/11/2025
+Date: 25/11/2025
 """
 
 import pandas as pd
-import streamlit as st
+from flask import Flask, render_template
 from sqlalchemy import Engine, create_engine, text
+from sqlalchemy.exc import OperationalError
+import logging
+
+from config import DATABASE_URL, FLASK_HOST, FLASK_PORT, FLASK_DEBUG
+
+# --- Configuração de Logging ---
+logging.basicConfig(level=logging.INFO)
+
+# --- Configuração do Aplicativo Flask ---
+app = Flask(__name__)
+
+# --- Conexão com o Banco de Dados ---
+try:
+    engine: Engine = create_engine(DATABASE_URL)
+except ImportError:
+    logging.error("Driver do banco de dados não encontrado. Por favor, instale-o.")
+    engine = None
 
 
-# URL do banco de dados, conforme definido em `src/database.py`.
-DATABASE_URL: str = "sqlite:///./data/openparking.db"
-engine: Engine = create_engine(DATABASE_URL)
-
-
-@st.cache_data(ttl=10) # Cache por 10 segundos para não sobrecarregar o DB
 def get_detections() -> pd.DataFrame:
     """
     Busca todas as detecções de placas do banco de dados.
-
-    A função usa um cache do Streamlit para evitar consultas repetidas
-    ao banco de dados em um curto período de tempo.
 
     Returns:
         pd.DataFrame: Um DataFrame do Pandas com os dados das detecções.
                       Retorna um DataFrame vazio em caso de erro.
     """
+    if not engine:
+        return pd.DataFrame(columns=['timestamp', 'license_plate'])
+
     try:
         with engine.connect() as connection:
-            query = text("SELECT id, timestamp, license_plate FROM detections ORDER BY timestamp DESC")
+            query = text("SELECT timestamp, license_plate FROM detections ORDER BY timestamp DESC")
             df: pd.DataFrame = pd.read_sql(query, connection)
             # Formata a coluna de data/hora para melhor legibilidade
             df['timestamp'] = pd.to_datetime(df['timestamp']).dt.strftime('%Y-%m-%d %H:%M:%S')
             return df
+    except OperationalError as e:
+        logging.error(f"Erro ao conectar ou consultar o banco de dados: {e}")
+        # Retorna um DataFrame vazio se a tabela não existir ou ocorrer um erro.
+        return pd.DataFrame(columns=['timestamp', 'license_plate'])
     except Exception as e:
-        # Se a tabela ainda não existir, por exemplo.
-        st.error(f"Erro ao buscar dados: {e}")
-        return pd.DataFrame()
+        logging.error(f"Ocorreu um erro inesperado: {e}")
+        return pd.DataFrame(columns=['timestamp', 'license_plate'])
 
 
-# --- Configuração da Página ---
-st.set_page_config(layout="wide", page_title="Dashboard LPR")
+# --- Rotas da Aplicação ---
+@app.route('/')
+def dashboard():
+    """
+    Renderiza o dashboard principal com os dados de detecção.
+    """
+    detections_df = get_detections()
 
-# --- Título ---
-st.title("🅿️ Dashboard OpenParking LPR")
-st.markdown("Visualizador de placas de veículos detectadas.")
+    total_detections = len(detections_df)
+    last_detection_time = "N/A"
+    if not detections_df.empty:
+        last_detection_time = detections_df['timestamp'].iloc[0]
 
-st.write("---")
+    # Converte o DataFrame para uma lista de dicionários para o template
+    detections_list = detections_df.to_dict(orient='records')
 
-# --- Painel de Destaques ---
-col1, col2 = st.columns(2)
-
-# --- Seção Principal de Dados ---
-st.subheader("Últimas Detecções")
-
-# Botão de atualização
-if st.button("Atualizar Dados"):
-    st.cache_data.clear() # Limpa o cache para forçar a releitura dos dados
-    st.rerun()
-
-detections_df: pd.DataFrame = get_detections()
-
-# Preenche os destaques
-col1.metric("Total de Detecções", len(detections_df))
-last_detection_time = detections_df['timestamp'].iloc[0] if not detections_df.empty else "N/A"
-col2.metric("Última Detecção", last_detection_time)
-
-
-if not detections_df.empty:
-    # Exibe a tabela de dados
-    st.dataframe(
-        detections_df,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "id": st.column_config.NumberColumn("ID"),
-            "timestamp": st.column_config.TextColumn("Data e Hora"),
-            "license_plate": st.column_config.TextColumn("Placa"),
-        }
+    return render_template(
+        'index.html',
+        total_detections=total_detections,
+        last_detection_time=last_detection_time,
+        detections=detections_list
     )
-else:
-    st.info("Nenhuma placa foi detectada ainda. Execute `main.py` para iniciar o processo.")
 
-st.write("---")
 
-# --- Seção Sobre ---
-with st.expander("Sobre esta Aplicação"):
-    st.markdown(
-        """
-        Este dashboard exibe os dados coletados pelo sistema de Reconhecimento de Placas.
-        
-        - O script `main.py` é responsável por rodar o pipeline de LPR, que processa o vídeo,
-          detecta as placas e as salva no banco de dados.
-        - Este dashboard (`app.py`) lê o banco de dados e exibe os resultados aqui.
-        """
-    )
+# --- Ponto de Entrada ---
+if __name__ == '__main__':
+    # Executa o aplicativo Flask em modo de depuração.
+    # O modo de depuração permite o recarregamento automático após alterações no código.
+    app.run(host=FLASK_HOST, port=FLASK_PORT, debug=FLASK_DEBUG)

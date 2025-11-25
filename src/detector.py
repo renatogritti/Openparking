@@ -10,10 +10,12 @@ Date: 21/11/2025
 """
 
 from typing import List
+import logging
 
-import cv2
 import numpy as np
 from ultralytics import YOLO
+
+from config import DETECTION_THRESHOLD, MODEL_PATH
 
 
 class Detector:
@@ -21,21 +23,15 @@ class Detector:
     Classe que encapsula o modelo de detecção de objetos YOLO para encontrar placas.
     """
 
-    def __init__(self, model_path: str = "yolov8n.pt") -> None:
+    def __init__(self, model_path: str = MODEL_PATH) -> None:
         """
         Inicializa o detector YOLO.
 
-        Na primeira execução, a biblioteca `ultralytics` fará o download do
-        modelo especificado se ele não for encontrado localmente.
-
         Args:
             model_path (str): Caminho para o arquivo de pesos do modelo YOLO (.pt).
-                              O padrão é 'yolov8n.pt', um modelo genérico.
-                              Para melhores resultados, use um modelo treinado
-                              especificamente em placas de veículos.
         """
         self.model: YOLO = YOLO(model_path)
-        print(f"Detector de objetos inicializado com o modelo: {model_path}")
+        logging.info(f"Detector de objetos inicializado com o modelo: {model_path}")
 
     def detect_plates(self, frame: np.ndarray) -> List[np.ndarray]:
         """
@@ -45,26 +41,17 @@ class Detector:
             frame (np.ndarray): O quadro de imagem da câmera.
 
         Returns:
-            List[np.ndarray]: Uma lista de caixas delimitadoras (bounding boxes)
-                              para as placas detectadas. Cada caixa está no
-                              formato [x1, y1, x2, y2]. Retorna uma lista vazia
-                              se nenhuma placa for encontrada.
+            List[np.ndarray]: Uma lista de caixas delimitadoras para as placas detectadas.
         """
         if frame is None or frame.size == 0:
             return []
 
-        # Realiza a inferência.
-        # verbose=False para suprimir a saída de log do YOLO.
         results = self.model(frame, verbose=False)
 
         bboxes: List[np.ndarray] = []
-        conf_threshold: float = 0.5
         for result in results:
             for box in result.boxes:
-                # box.cls é o ID da classe. Para um modelo treinado apenas em placas,
-                # o ID da classe 'license_plate' geralmente é 0.
-                # box.conf é a confiança da detecção.
-                if box.cls == 0 and box.conf >= conf_threshold:
+                if box.cls == 0 and box.conf >= DETECTION_THRESHOLD:
                     xyxy: np.ndarray = box.xyxy.cpu().numpy().astype(int)[0]
                     bboxes.append(xyxy)
 
@@ -82,7 +69,6 @@ class Detector:
             np.ndarray: A imagem recortada da placa.
         """
         x1, y1, x2, y2 = bbox
-        # Adiciona uma pequena margem para garantir que a placa inteira seja capturada.
         y1_buffered: int = max(0, y1 - 5)
         y2_buffered: int = min(frame.shape[0], y2 + 5)
         x1_buffered: int = max(0, x1 - 5)
@@ -92,24 +78,21 @@ class Detector:
 
 
 if __name__ == "__main__":
-    print("Testando o Detector...")
+    logging.info("Testando o Detector...")
     
-    # Cria uma imagem cinza para simular um quadro de vídeo.
     mock_image: np.ndarray = np.zeros((480, 640, 3), dtype=np.uint8)
     mock_image.fill(128)
 
     try:
-        # Isso fará o download do yolov8n.pt na primeira execução, se não existir.
         detector = Detector()
         detected_boxes = detector.detect_plates(mock_image)
 
         if detected_boxes:
-            print(f"Encontrados {len(detected_boxes)} objetos em potencial.")
-            # Recorta o primeiro objeto detectado
+            logging.info(f"Encontrados {len(detected_boxes)} objetos em potencial.")
             first_plate_img = detector.crop_plate(mock_image, detected_boxes[0])
-            print(f"Primeiro objeto recortado com shape: {first_plate_img.shape}")
+            logging.info(f"Primeiro objeto recortado com shape: {first_plate_img.shape}")
         else:
-            print("Nenhum objeto detectado na imagem de teste, como esperado.")
+            logging.info("Nenhum objeto detectado na imagem de teste, como esperado.")
 
     except Exception as e:
-        print(f"Não foi possível executar o teste do Detector: {e}")
+        logging.error(f"Não foi possível executar o teste do Detector: {e}")

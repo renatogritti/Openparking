@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenParking LPR Dashboard</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            margin: 0;
+            background-color: #f0f2f5;
+        }
+        .container {
+            max-width: 900px;
+            margin: 2rem auto;
+            padding: 2rem;
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 2rem;
+        }
+        .metrics {
+            display: flex;
+            justify-content: space-around;
+            margin-bottom: 2rem;
+        }
+        .metric {
+            text-align: center;
+            padding: 1rem;
+            border-radius: 8px;
+            background-color: #e9ecef;
+            min-width: 200px;
+        }
+        .metric h2 {
+            margin: 0 0 0.5rem 0;
+            font-size: 1.2rem;
+            color: #555;
+        }
+        .metric p {
+            margin: 0;
+            font-size: 1.8rem;
+            font-weight: bold;
+            color: #007bff;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 2rem;
+        }
+        th, td {
+            padding: 0.75rem;
+            text-align: left;
+            border-bottom: 1px solid #dee2e6;
+        }
+        th {
+            background-color: #007bff;
+            color: white;
+        }
+        tr:nth-child(even) {
+            background-color: #f2f2f2;
+        }
+        .refresh-btn {
+            display: block;
+            width: 150px;
+            margin: 2rem auto 0 auto;
+            padding: 0.75rem;
+            text-align: center;
+            background-color: #007bff;
+            color: white;
+            text-decoration: none;
+            border-radius: 5px;
+            font-weight: bold;
+        }
+        .refresh-btn:hover {
+            background-color: #0056b3;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🅿️ OpenParking LPR Dashboard</h1>
+
+        <div class="metrics">
+            <div class="metric">
+                <h2>Total de Detecções</h2>
+                <p>{{ total_detections }}</p>
+            </div>
+            <div class="metric">
+                <h2>Última Detecção</h2>
+                <p>{{ last_detection_time }}</p>
+            </div>
+        </div>
+
+        <h2>Últimas Detecções</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Data e Hora</th>
+                    <th>Placa</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for detection in detections %}
+                <tr>
+                    <td>{{ detection.timestamp }}</td>
+                    <td>{{ detection.license_plate }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        
+        <a href="/" class="refresh-btn">Atualizar Dados</a>
+    </div>
+</body>
+</html>

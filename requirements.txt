@@ -4,4 +4,4 @@ easyocr
 SQLAlchemy
 pandas
 numpy
-streamlit
+flask

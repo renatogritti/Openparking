@@ -10,8 +10,9 @@ Author: Renato Gritti
 Date: 21/11/2025
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
+import logging
 
 from sqlalchemy import (
     create_engine,
@@ -22,56 +23,102 @@ from sqlalchemy import (
     String,
     DateTime,
     Engine,
+    select,
 )
+from sqlalchemy.exc import SQLAlchemyError
 
-# URL de conexão para o banco de dados SQLite.
-# O banco será um arquivo na pasta 'data'.
-DATABASE_URL: str = "sqlite:///./data/openparking.db"
+from config import DATABASE_URL
 
-# Engine do SQLAlchemy para conexão.
-# `check_same_thread` é necessário para SQLite em ambientes multi-thread.
-engine: Engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
-metadata: MetaData = MetaData()
+# --- Configuração do Banco de Dados ---
+try:
+    engine: Engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+    metadata: MetaData = MetaData()
+except ImportError:
+    logging.error("Driver do banco de dados não encontrado. Por favor, instale-o.")
+    engine = None
+    metadata = None
 
-# Definição da tabela 'detections' para armazenar as placas reconhecidas.
-detections: Table = Table(
-    "detections",
-    metadata,
-    Column("id", Integer, primary_key=True),
-    Column("timestamp", DateTime, default=datetime.utcnow),
-    Column("license_plate", String, nullable=False),
-    Column("image_path", String, nullable=True),
-)
+# Definição da tabela 'detections'
+if metadata is not None:
+    detections: Table = Table(
+        "detections",
+        metadata,
+        Column("id", Integer, primary_key=True),
+        Column("timestamp", DateTime, default=datetime.utcnow),
+        Column("license_plate", String, nullable=False, index=True),
+        Column("image_path", String, nullable=True),
+    )
 
 
 def create_db_and_tables() -> None:
-    """
-    Cria o arquivo de banco de dados e as tabelas necessárias, caso não existam.
-    """
-    metadata.create_all(engine)
+    """Cria o banco de dados e as tabelas, se não existirem."""
+    if engine and metadata:
+        try:
+            metadata.create_all(engine)
+            logging.info("Banco de dados e tabelas verificados/criados com sucesso.")
+        except SQLAlchemyError as e:
+            logging.error(f"Erro ao criar tabelas do banco de dados: {e}")
 
 
-def add_detection(plate: str, image_path: Optional[str] = None) -> None:
+def check_existing_plate(plate: str) -> bool:
     """
-    Adiciona uma nova detecção de placa ao banco de dados.
+    Verifica se uma placa foi registrada no último minuto.
+    """
+    if not engine:
+        return True  # Evita novas inserções se o DB não estiver disponível
 
-    Args:
-        plate (str): O texto da placa detectada.
-        image_path (Optional[str], optional): O caminho para a imagem salva
-                                              do carro/placa. Defaults to None.
+    try:
+        with engine.connect() as connection:
+            one_minute_ago = datetime.utcnow() - timedelta(minutes=1)
+            statement = (
+                select(detections)
+                .where(detections.c.license_plate == plate)
+                .where(detections.c.timestamp >= one_minute_ago)
+                .limit(1)
+            )
+            result = connection.execute(statement).first()
+            return result is not None
+    except SQLAlchemyError as e:
+        logging.error(f"Erro ao verificar placa existente: {e}")
+        return True
+
+
+def add_detection(plate: str, image_path: Optional[str] = None) -> bool:
     """
-    with engine.connect() as connection:
-        statement = detections.insert().values(
-            license_plate=plate, image_path=image_path
-        )
-        connection.execute(statement)
-        connection.commit()
+    Adiciona uma nova detecção se ela não foi registrada no último minuto.
+    """
+    if not engine or check_existing_plate(plate):
+        return False
+
+    try:
+        with engine.connect() as connection:
+            statement = detections.insert().values(
+                license_plate=plate, image_path=image_path
+            )
+            connection.execute(statement)
+            connection.commit()
+            return True
+    except SQLAlchemyError as e:
+        logging.error(f"Erro ao adicionar detecção: {e}")
+        return False
 
 
 if __name__ == "__main__":
-    print("Inicializando banco de dados para teste...")
+    logging.basicConfig(level=logging.INFO)
+    logging.info("Testando o módulo de banco de dados...")
     create_db_and_tables()
-    print("Banco de dados e tabelas criados com sucesso.")
-    print("Adicionando uma detecção de teste...")
-    add_detection("ABC-1234", "data/test_image.jpg")
-    print("Detecção de teste adicionada.")
+
+    test_plate = "TESTE123"
+    logging.info(f"Adicionando placa de teste: {test_plate}")
+    success = add_detection(test_plate)
+    if success:
+        logging.info("Placa de teste adicionada com sucesso.")
+    else:
+        logging.error("Falha ao adicionar a primeira placa de teste.")
+
+    logging.info(f"Tentando adicionar a mesma placa novamente (deve ser bloqueado)...")
+    success_duplicate = add_detection(test_plate)
+    if not success_duplicate:
+        logging.info("Detecção duplicada bloqueada com sucesso, como esperado.")
+    else:
+        logging.error("ERRO: Placa duplicada foi adicionada indevidamente.")

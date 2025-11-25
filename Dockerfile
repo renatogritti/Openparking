@@ -1,52 +1,54 @@
-# Stage 1: Build and install dependencies
-# Using a specific version of python for reproducibility
-FROM python:3.10-slim as builder
+# Stage 1: Builder
+# Use a specific, lightweight Python version for reproducibility.
+FROM python:3.11-slim as builder
 
-# Set the working directory
+# Set the working directory.
 WORKDIR /app
 
-# Install system dependencies required for OpenCV and other libraries
-# RUN apt-get update && apt-get install -y libgl1-mesa-glx libglib2.0-0 --no-install-recommends
+# Install system dependencies required for OpenCV.
+# Using --no-install-recommends to keep the image slim.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends libgl1-mesa-glx libglib2.0-0 && \
+    rm -rf /var/lib/apt/lists/*
 
-# Copy the requirements file
+# Copy only the requirements file to leverage Docker's layer caching.
 COPY requirements.txt .
 
-# Install dependencies
-# This step is separated to leverage Docker's layer caching
-RUN pip wheel --no-cache-dir --wheel-dir /app/wheels -r requirements.txt
+# Install python dependencies into a virtual environment.
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+RUN pip install --no-cache-dir -r requirements.txt
 
 
 # Stage 2: Final application image
-FROM python:3.10-slim
+FROM python:3.11-slim
 
-# Set the working directory
+# Set the working directory.
 WORKDIR /app
 
-# Install system dependencies required for OpenCV at runtime
-RUN apt-get update && apt-get install -y libgl1-mesa-glx libglib2.0-0 --no-install-recommends && rm -rf /var/lib/apt/lists/*
+# Create a non-root user to run the application for security.
+RUN useradd --create-home appuser
+USER appuser
 
-# Copy the pre-built wheels from the builder stage
-COPY --from=builder /app/wheels /wheels/
+# Copy the virtual environment from the builder stage.
+COPY --from=builder /opt/venv /opt/venv
 
-# Install the wheels
-RUN pip install --no-cache /wheels/*
+# Copy the application source code.
+COPY --chown=appuser:appuser . .
 
-# Copy the application source code
-COPY . .
+# Set the PATH to include the venv.
+ENV PATH="/opt/venv/bin:$PATH"
 
-# --- IMPORTANT NOTE ON MODELS ---
-# The EasyOCR and YOLO models are downloaded on the first run inside the container.
-# This means the first startup will be slow and require an internet connection.
-# For a production setup, consider creating a script to download these models
-# during the Docker build process itself.
-# RUN python -c "from ultralytics import YOLO; YOLO('yolov8n.pt')"
+# --- Model Caching Note ---
+# The EasyOCR and YOLO models are downloaded on the first run. For production,
+# it's better to download these during the build process to avoid slow startup
+# and to ensure they are available without an internet connection.
+# Example (uncomment and adapt if needed):
+# RUN python -c "from ultralytics import YOLO; from config import MODEL_PATH; YOLO(MODEL_PATH)"
 # RUN python -c "import easyocr; easyocr.Reader(['en', 'pt'])"
 
+# Expose the port the Flask app will run on.
+EXPOSE 5001
 
-# Expose the port Streamlit will run on
-EXPOSE 8501
-
-# Set the command to run the Streamlit application
-# The --server.runOnSave=false flag is a good practice for production
-CMD ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0", "--server.runOnSave=false"]
-
+# Set the command to run the Flask application.
+CMD ["python", "app.py"]
